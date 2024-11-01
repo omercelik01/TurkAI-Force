@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+boto3
+pdfplumber
+numpy
+faiss-cpu
+sentence-transformers
+requests
+PyPDF2
+langchain
