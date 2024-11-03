@@ -5,12 +5,13 @@
     height: 100vh;
     justify-content: space-between;
     padding: 20px;
+    
   }
   
   .chat-window {
     flex: 1;
     overflow-y: auto;
-    border: 1px solid #ccc;
+    border: 1px solid #0f0000d2;
     padding: 10px;
     margin-bottom: 20px;
   }

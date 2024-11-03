@@ -1,78 +1,108 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-import boto3
-import numpy as np
-import faiss
-from dotenv import load_dotenv
-import os
+from fastapi import FastAPI, HTTPException
+from pymongo import MongoClient
 from sentence_transformers import SentenceTransformer
-import io
+import numpy as np
+import os
+from dotenv import load_dotenv
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
 
-# .env dosyasını yükle
+# Load environment variables
 load_dotenv()
-AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY')
-AWS_SECRET_KEY = os.getenv('AWS_SECRET_KEY')
-AWS_REGION = os.getenv('AWS_REGION', 'eu-north-1')
-BUCKET_NAME = os.getenv('BUCKET_NAME', 'lexidatabase')
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
+DATABASE_NAME = os.getenv('DATABASE_NAME', 'lexidatabase')
+COLLECTION_NAME = 'embeddings'
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-# S3 istemcisi oluştur
-s3 = boto3.client(
-    's3',
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-)
+# MongoDB Connection
+client = MongoClient(MONGO_URI)
+db = client[DATABASE_NAME]
+collection = db[COLLECTION_NAME]
 
-# SentenceTransformer modeli
+# Initialize Generative AI API
+genai.configure(api_key=GEMINI_API_KEY)
+
+# SentenceTransformer model
 embedder = SentenceTransformer('all-mpnet-base-v2')
 
+# Initialize FastAPI app
 app = FastAPI()
 
-# S3'ten embedding ve metinleri yükleme
-def load_embeddings_and_texts():
-    try:
-        s3.download_file(BUCKET_NAME, "embeddings/embeddings.npy", "downloaded_embeddings.npy")
-        embeddings = np.load("downloaded_embeddings.npy")
-        s3.download_file(BUCKET_NAME, "embeddings/texts.txt", "downloaded_texts.txt")
-        with open("downloaded_texts.txt", "r", encoding="utf-8") as f:
-            texts = f.readlines()
-        texts = [text.strip() for text in texts]
-        return embeddings, texts
-    except Exception as e:
-        print(f"Error loading from S3: {e}")
-        return None, None
+# Add CORS middleware
+origins = [
+    "http://localhost:3000",
+    "http://localhost:8000",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Kullanıcı sorgusu ile FAISS kullanarak en yakın sonucu bulma
-def search_in_documents(embedding_array, query, texts):
+# Request model
+class QueryRequest(BaseModel):
+    query: str
+
+# Cosine similarity function
+def cosine_similarity(vec1, vec2):
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+
+# Find similar document
+@app.post("/ask")
+async def find_similar_document(request: QueryRequest):
+    query = request.query
+    # Convert user query to embedding
     query_embedding = embedder.encode([query], convert_to_numpy=True)
 
-    # FAISS index oluşturma
-    dimension = embedding_array.shape[1]
-    faiss_index = faiss.IndexFlatL2(dimension)
+    # Fetch embeddings from MongoDB
+    items = list(collection.find())
 
-    # Embeddingleri ekleme
-    faiss.normalize_L2(embedding_array)
-    faiss_index.add(embedding_array)
+    if not items:
+        raise HTTPException(status_code=404, detail="No embeddings found in the database.")
 
-    # Arama yapma
-    faiss.normalize_L2(query_embedding)
-    D, I = faiss_index.search(query_embedding, k=1)
+    best_similarity = -1
+    best_match = None
 
-    # En iyi sonucu döndürme
-    index = I[0][0]
-    if index < len(texts):
-        return texts[index]
+    # Find the most similar document
+    for item in items:
+        if 'embedding' in item and isinstance(item['embedding'], list):
+            embedding = np.array(item['embedding'], dtype=np.float32)
+            similarity = cosine_similarity(query_embedding[0], embedding)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = item
+
+    if best_match:
+        # Use the text field for more informative response
+        response_text = best_match.get('text', "Metin mevcut değil.")
+
+        # Generate answer using the context from the best match
+        try:
+            response = genai.generate_text(
+                model="models/chat-bison-001",
+                prompt=f"Kontekst: {response_text}\nSoru: {query}\nCevap:",
+                max_output_tokens=200
+            )
+            answer = response.generations[0].text
+        except Exception as e:
+            answer = f"Cevap oluşturulurken bir hata oluştu: {str(e)}"
+
+        return {
+            "embedding_id": best_match.get('embedding_id', 'Unknown'),
+            "similarity": round(float(best_similarity), 2),
+            "text": response_text,
+            "generated_answer": answer
+        }
     else:
-        return "Sorry, no answer found."
+        raise HTTPException(status_code=404, detail="No similar document found.")
 
-@app.get("/ask")
-async def ask_question(query: str):
-    embeddings, texts = load_embeddings_and_texts()
-    if embeddings is None or texts is None:
-        return JSONResponse(content={"error": "Unable to load embeddings or texts"}, status_code=500)
-    
-    response = search_in_documents(embeddings, query, texts)
-    return JSONResponse(content={"answer": response})
+# Main entry point for local testing
+@app.get("/ping")
+async def ping():
+    return {"message": "pong"}
 
 if __name__ == "__main__":
     import uvicorn
