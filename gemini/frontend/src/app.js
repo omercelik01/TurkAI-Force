@@ -17,7 +17,7 @@ function App() {
 
   return (
     <div>
-      <h1>MongoDB Tabanlı Chatbot Uygulaması</h1>
+      <h1>Hukuki Eğitim Chatbotu</h1>
       <input
         type="text"
         value={query}
@@ -27,7 +27,7 @@ function App() {
       <button onClick={handleSubmit}>Sor</button>
       {response && (
         <div>
-          <h2>En İyi Eşleşme:</h2>
+          <h2>Cevap:</h2>
           
           
           <p>Metin: {response.text}</p>

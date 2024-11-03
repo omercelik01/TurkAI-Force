@@ -25,7 +25,7 @@ s3_client = boto3.client(
     aws_secret_access_key=AWS_SECRET_KEY,
     region_name=AWS_REGION
 )
-
+ 
 # Initialize MongoDB client
 client = MongoClient(MONGO_URI)
 db = client[DATABASE_NAME]
@@ -81,3 +81,4 @@ def compute_and_save_embeddings():
 
 if __name__ == "__main__":
     compute_and_save_embeddings()
+
